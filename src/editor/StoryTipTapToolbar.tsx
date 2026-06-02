@@ -72,7 +72,7 @@ import {
 } from "./story-tiptap-toolbar-utils";
 import { getStoryEditorSemanticPreset } from "./story-tiptap-semantic-preset";
 import type { StoryRichTextTextPreset } from "../types";
-import { StoryPersonLinkToolbarButton } from "./StoryPersonLinkToolbarButton";
+import { StoryEntityLinkToolbarButton } from "./StoryEntityLinkToolbarButton";
 import { StoryFlowInsertToolbarButtons } from "./StoryFlowInsertToolbarButtons";
 
 function ToolbarBtn({
@@ -386,7 +386,7 @@ function StoryTipTapToolbarLive({
           <ToolbarBtn touch label="Insert link" active={s.link} onClick={setLink}>
             <Link2 className="size-4" />
           </ToolbarBtn>
-          <StoryPersonLinkToolbarButton editor={editor} touch />
+          <StoryEntityLinkToolbarButton editor={editor} touch />
           <span className="mx-1 h-6 w-px shrink-0 bg-base-content/12" aria-hidden />
           <StoryFlowInsertToolbarButtons editor={editor} touch />
           <ToolbarBtn
@@ -709,7 +709,7 @@ function StoryTipTapToolbarLive({
         <ToolbarBtn label="Insert link" active={s.link} onClick={setLink}>
           <Link2 className="size-4" />
         </ToolbarBtn>
-        <StoryPersonLinkToolbarButton editor={editor} />
+        <StoryEntityLinkToolbarButton editor={editor} />
         <span className="mx-1 h-6 w-px shrink-0 bg-base-content/12" aria-hidden />
         <StoryFlowInsertToolbarButtons editor={editor} />
         <ToolbarBtn

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useToolbarDialogOpen } from "./story-tiptap-active-editor-context";
 import type { Editor } from "@tiptap/core";
 import { UserRound } from "lucide-react";
 import { Button } from "./ui/button";
@@ -76,6 +77,8 @@ export function StoryPersonLinkToolbarButton({
   const [selection, setSelection] = useState<SelectionSnapshot>(() => selectedText(editor));
   const [selectedIndividual, setSelectedIndividual] = useState<StoryPickerIndividualItem | null>(null);
   const [displayText, setDisplayText] = useState("");
+
+  useToolbarDialogOpen(open);
 
   const active = editor.isActive("link", { entityType: "person" });
   const selectedMeta = selectedIndividual ? storyPickerIndividualMetaLine(selectedIndividual) : "";

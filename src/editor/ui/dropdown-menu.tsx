@@ -23,14 +23,19 @@ export const DropdownMenuTrigger = forwardRef<HTMLButtonElement, ButtonHTMLAttri
   },
 );
 
-export const DropdownMenuContent = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
-  function DropdownMenuContent({ className, ...props }, ref) {
+export interface DropdownMenuContentProps extends HTMLAttributes<HTMLDivElement> {
+  align?: "start" | "end" | "center";
+}
+
+export const DropdownMenuContent = forwardRef<HTMLDivElement, DropdownMenuContentProps>(
+  function DropdownMenuContent({ className, align = "start", ...props }, ref) {
+    const anchor = align === "end" ? "bottom end" : align === "center" ? "bottom" : "bottom start";
     return (
       <HLMenuItems
         ref={ref}
-        anchor="bottom start"
+        anchor={anchor}
         className={cn(
-          "z-[110] min-w-32 origin-top-left rounded-box",
+          "z-[250] min-w-32 origin-top-left rounded-box",
           "border border-base-content/10 bg-base-100 p-1.5 shadow-xl",
           "focus:outline-none",
           className,

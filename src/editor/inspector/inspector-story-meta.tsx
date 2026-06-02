@@ -18,13 +18,13 @@ import {
 } from "../../utils/story-author-display";
 import { legacyCoverImageRef } from "../../utils/story-images-resolve";
 import { mediaThumbSrc, resolveMediaImageSrc } from "../media-preview";
-import { useStoryEditorPickers, type StoryPickerPlaceRow, type StoryPickerAlbumItem, storyPickerPlaceLabel } from "../pickers-context";
+import { useStoryEditorPickers, type StoryPickerPlaceRow, type StoryPickerAlbumItem, storyPickerPlaceLabel, storyPickerIndividualDisplayName, storyPickerIndividualMetaLine } from "../pickers-context";
 import { useStoryEditorMedia } from "../media-context";
 import { cn } from "../../cn";
 import { Button } from "../ui/button";
 import { CollapsibleFormSection } from "../ui/collapsible-form-section";
 import { FieldLabel } from "./inspector-primitives";
-import { ArrowUp, ArrowDown, ImageIcon, Plus, Trash2 } from "lucide-react";
+import { ArrowUp, ArrowDown, ImageIcon, Plus, Trash2, UserCircle, X } from "lucide-react";
 
 // ─── EventPickerButton — local wrapper that owns open state ───────────────────
 
@@ -503,6 +503,7 @@ export function InspectorStoryAuthorsSection({
   authorPrefixOptionClass: (active: boolean) => string;
   onStoryMetaChange: (patch: StoryDocumentMetaPatch) => void;
 }) {
+  const { IndividualSearchPicker } = useStoryEditorPickers();
   const credits = useMemo(() => getStoryAuthorCredits(doc), [doc]);
 
   const setCredits = useCallback(
@@ -615,6 +616,47 @@ export function InspectorStoryAuthorsSection({
                 value={credit.name}
                 onChange={(e) => updateCredit(credit.id, { name: e.target.value })}
               />
+              {IndividualSearchPicker ? (
+                <div className="mt-2">
+                  <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-base-content/45">
+                    Link to tree person
+                  </p>
+                  {credit.personXref ? (
+                    <div className="flex items-center gap-2 rounded-lg border border-base-content/12 bg-base-100/60 px-3 py-2">
+                      <UserCircle className="size-4 shrink-0 text-base-content/45" aria-hidden />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-base-content">{credit.name}</p>
+                        <p className="text-xs text-base-content/50">{credit.personXref}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-xs shrink-0 gap-1 text-base-content/50"
+                        onClick={() => updateCredit(credit.id, { personXref: undefined, personId: undefined })}
+                        aria-label="Remove tree person link"
+                      >
+                        <X className="size-3" aria-hidden />
+                        Clear
+                      </button>
+                    </div>
+                  ) : (
+                    <IndividualSearchPicker
+                      idPrefix={`author-person-${credit.id}`}
+                      onPick={(ind) => {
+                        updateCredit(credit.id, {
+                          personXref: ind.xref ?? undefined,
+                          personId: ind.id,
+                          name: storyPickerIndividualDisplayName(ind),
+                        });
+                      }}
+                    />
+                  )}
+                  {credit.personXref ? null : (
+                    <p className="mt-1 text-[10px] text-base-content/40">
+                      Optional — links the byline name to their profile page.
+                    </p>
+                  )}
+                </div>
+              ) : null}
               <p className="mb-1.5 mt-3 text-[10px] font-bold uppercase tracking-wider text-base-content/45">
                 Text before this name
               </p>

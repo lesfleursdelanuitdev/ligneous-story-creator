@@ -1087,7 +1087,7 @@ export function OtherEmbedInspector({
               onPick={(fam) => {
                 const label = fam.primaryLine ?? fam.xref ?? fam.id;
                 patchData({ familyId: fam.id, familyXref: fam.xref, familyLabel: label });
-                onPatch({ subject: { type: "family", id: fam.id, xref: fam.xref, label } });
+                onPatch({ subject: { type: "family", id: fam.id, xref: fam.xref ?? undefined, label } });
               }}
             />
           ) : null}

@@ -184,10 +184,6 @@ export function getContainerClasses(
   const shell = presetShellClassName(r, mode);
   const bg = backgroundOverlayClass(block.props, r, r.preset);
   const defaultPresetFill = r.background === "none" && r.preset === "default" ? "bg-transparent" : "";
-  const editorRing =
-    mode === "editor" && opts?.selected
-      ? "ring-2 ring-primary/45 ring-offset-2 ring-offset-[var(--story-ring-offset,theme(colors.base.100))]"
-      : "";
   const editorEmptyMin =
     mode === "editor" && opts?.emptyChildren ? "min-h-[3.5rem] flex flex-col justify-center" : "";
 
@@ -197,7 +193,6 @@ export function getContainerClasses(
     shell,
     bg,
     defaultPresetFill,
-    editorRing,
     editorEmptyMin,
   );
 }

@@ -13,6 +13,10 @@ export type StoryTiptapActiveEditorContextValue = {
   notifyEditorFocused: (editor: Editor) => void;
   notifyEditorBlurred: () => void;
   clearGlobalActiveEditor: () => void;
+  /** Register an open toolbar dialog — prevents blur from clearing the active editor. */
+  openToolbarDialog: () => void;
+  /** Unregister a toolbar dialog (call on close). */
+  closeToolbarDialog: () => void;
 };
 
 const StoryTiptapActiveEditorContext = createContext<StoryTiptapActiveEditorContextValue | null>(null);
@@ -26,6 +30,7 @@ export function StoryTiptapActiveEditorProvider({
 }) {
   const mountedRef = useRef(new Set<Editor>());
   const [activeEditor, setActiveEditor] = useState<Editor | null>(null);
+  const toolbarDialogCountRef = useRef(0);
 
   const mountEditor = useCallback((editor: Editor) => {
     mountedRef.current.add(editor);
@@ -44,12 +49,20 @@ export function StoryTiptapActiveEditorProvider({
     setActiveEditor(null);
   }, []);
 
+  const openToolbarDialog = useCallback(() => {
+    toolbarDialogCountRef.current += 1;
+  }, []);
+
+  const closeToolbarDialog = useCallback(() => {
+    toolbarDialogCountRef.current = Math.max(0, toolbarDialogCountRef.current - 1);
+  }, []);
+
   const notifyEditorBlurred = useCallback(() => {
     const focusIsOnToolbarChrome = () => {
       const el = document.activeElement;
       if (!(el instanceof Element)) return false;
       if (el.closest("[data-story-global-tiptap-toolbar]")) return true;
-      if (el.closest("[data-story-person-link-dialog]")) return true;
+      if (el.closest("[data-story-entity-link-dialog]")) return true;
       if (el.closest("[data-story-flow-insert-dialog]")) return true;
       if (el.closest('[data-slot="dropdown-menu-content"]')) return true;
       if (el.closest('[data-slot="dropdown-menu-sub-content"]')) return true;
@@ -75,6 +88,7 @@ export function StoryTiptapActiveEditorProvider({
     };
     runAfterFocusSettled(() => {
       if (toolbarDensity === "touch") return;
+      if (toolbarDialogCountRef.current > 0) return;
       if ([...mountedRef.current].some((e) => !e.isDestroyed && e.view.hasFocus())) return;
       if (focusStillInsideMountedEditor()) return;
       if (focusIsOnToolbarChrome()) return;
@@ -92,6 +106,8 @@ export function StoryTiptapActiveEditorProvider({
       notifyEditorFocused,
       notifyEditorBlurred,
       clearGlobalActiveEditor,
+      openToolbarDialog,
+      closeToolbarDialog,
     }),
     [
       activeEditor,
@@ -101,6 +117,8 @@ export function StoryTiptapActiveEditorProvider({
       notifyEditorFocused,
       notifyEditorBlurred,
       clearGlobalActiveEditor,
+      openToolbarDialog,
+      closeToolbarDialog,
     ],
   );
 
@@ -109,6 +127,21 @@ export function StoryTiptapActiveEditorProvider({
 
 export function useStoryTiptapActiveEditorOptional(): StoryTiptapActiveEditorContextValue | null {
   return useContext(StoryTiptapActiveEditorContext);
+}
+
+/**
+ * Registers/unregisters a toolbar dialog with the active-editor context while `open` is true.
+ * This prevents the blur handler from clearing the active editor when focus moves into the dialog.
+ */
+export function useToolbarDialogOpen(open: boolean): void {
+  const ctx = useStoryTiptapActiveEditorOptional();
+  const openFn = ctx?.openToolbarDialog;
+  const closeFn = ctx?.closeToolbarDialog;
+  useLayoutEffect(() => {
+    if (!open || !openFn || !closeFn) return;
+    openFn();
+    return () => closeFn();
+  }, [open, openFn, closeFn]);
 }
 
 export function StoryGlobalToolbarSelectionSync({

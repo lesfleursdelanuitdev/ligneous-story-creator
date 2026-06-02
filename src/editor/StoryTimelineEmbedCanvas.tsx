@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { Timeline, timelineUrlDefaults } from "@ligneous/timeline-view";
-import type { TimelineChromeOnly } from "@ligneous/timeline-view";
+import type { TimelineChromeOnly, IndividualDetailEvent, TimelineSubject } from "@ligneous/timeline-view";
 import type { StoryEmbedBlock } from "../types";
 import { storyTimelinePayloadFromEmbedBlock } from "../utils/story-embed-semantics";
 import { useStoryEditorTimelineOptional } from "./timeline-embed-context";
@@ -149,10 +149,10 @@ export function StoryTimelineEmbedCanvas({ block, isEditing = false, onHeightCha
             ) : null}
             {data.status === "ready" && data.events.length > 0 ? (
               <Timeline
-                events={data.events}
+                events={data.events as IndividualDetailEvent[]}
                 chrome={chrome}
                 onChromeChange={() => {}}
-                timelineSubject={data.timelineSubject}
+                timelineSubject={data.timelineSubject as TimelineSubject}
                 hasAnyPreviewMedia={data.hasAnyPreviewMedia}
                 showBuiltInPagination={false}
                 showBuiltInOrientToggle={false}

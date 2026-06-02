@@ -23,7 +23,6 @@ import {
   GripVertical,
   Leaf,
   Loader2,
-  Minimize2,
   Pencil,
   PanelRight,
   PanelRightClose,
@@ -41,6 +40,7 @@ import { StoryCreatorInspector } from "./StoryCreatorInspector";
 import { StoryCanvasOpsContext, type StoryCanvasOpsContextValue } from "./story-creator-canvas-ops-context";
 import { StoryEditorStoreProvider } from "./state/storyEditorContext";
 import { useStoryEditorStore } from "./state/storyEditorContext";
+import type { StoryEditorMode } from "./state/storyEditorTypes";
 import { useStoryEditorOperations } from "./useStoryEditorOperations";
 import { StoryAddBlockPresetTypeGrid } from "./StoryAddBlockPresetTypeGrid";
 import { StoryBlockPlacementDialog } from "./StoryBlockPlacementDialog";
@@ -61,15 +61,6 @@ import {
   StoryMobileFullScreenPanel,
   type StoryMobileShellTab,
 } from "./story-creator-mobile";
-import {
-  Dialog,
-  DialogBackdrop,
-  DialogDescription,
-  DialogPortal,
-  DialogPopup,
-  DialogTitle,
-  DialogViewport,
-} from "./ui/dialog";
 import { Button, buttonVariants } from "./ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { useMediaQueryMinLg } from "./hooks/useMediaQueryMinLg";
@@ -186,15 +177,20 @@ function StoryCreatorBrandMark() {
 
 export type StorySaveStatus = "idle" | "saving" | "error";
 
+export type StoryCreatorFullscreenState = { selectedBlockId: string | null; mode: StoryEditorMode };
+
 export type StoryCreatorClientProps = {
   storyId: string;
   onLoad: (id: string) => Promise<StoryDocument | null>;
   onSave: (doc: StoryDocument) => Promise<StoryDocument>;
-  onBack?: () => void;
+  onBack?: (state: StoryCreatorFullscreenState) => void;
   onPublish?: (doc: StoryDocument) => Promise<StoryDocument>;
   onUnpublish?: (doc: StoryDocument) => Promise<StoryDocument>;
   onCheckSlugAvailability?: (slug: string) => Promise<{ available: boolean }>;
   publicOrigin?: string;
+  initialSelectedBlockId?: string;
+  initialMode?: StoryEditorMode;
+  onEnterFullscreen?: (state: StoryCreatorFullscreenState) => void;
 };
 
 // ── Inner client (needs store context) ───────────────────────────────────────
@@ -208,6 +204,9 @@ function StoryCreatorClientInner({
   onUnpublish,
   onCheckSlugAvailability,
   publicOrigin,
+  initialSelectedBlockId,
+  initialMode,
+  onEnterFullscreen,
 }: StoryCreatorClientProps) {
   // Store
   const doc = useStoryEditorStore((s) => s.document);
@@ -246,10 +245,6 @@ function StoryCreatorClientInner({
   // Load / save state
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<StorySaveStatus>("idle");
-
-  // Fullscreen
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [fullscreenAddBlockOpen, setFullscreenAddBlockOpen] = useState(false);
 
   // Refs
   const storyTitleInputRef = useRef<HTMLInputElement>(null);
@@ -397,10 +392,24 @@ function StoryCreatorClientInner({
           });
         }
         initializeDocument(loadedDoc);
+        if (initialMode) setMode(initialMode);
         const roots = Array.isArray(loadedDoc.sections) ? loadedDoc.sections : [];
-        const firstSec = roots[0] ?? null;
-        selectSection(firstSec?.id ?? null);
-        selectBlock(firstSec?.blocks?.[0]?.id ?? null);
+        if (initialSelectedBlockId) {
+          const allSections = flattenSectionsDepthFirst(roots);
+          const ownerSection = allSections.find((s) => s.blocks.some((b) => b.id === initialSelectedBlockId));
+          if (ownerSection) {
+            selectSection(ownerSection.id);
+            selectBlock(initialSelectedBlockId);
+          } else {
+            const firstSec = roots[0] ?? null;
+            selectSection(firstSec?.id ?? null);
+            selectBlock(firstSec?.blocks?.[0]?.id ?? null);
+          }
+        } else {
+          const firstSec = roots[0] ?? null;
+          selectSection(firstSec?.id ?? null);
+          selectBlock(firstSec?.blocks?.[0]?.id ?? null);
+        }
       } catch (err) {
         console.error("Story load failed", err);
         if (cancelled) return;
@@ -410,7 +419,7 @@ function StoryCreatorClientInner({
       }
     })();
     return () => { cancelled = true; };
-  }, [storyId, onLoad, onSave, initializeDocument, selectSection, selectBlock]);
+  }, [storyId, onLoad, onSave, initializeDocument, selectSection, selectBlock, setMode, initialMode, initialSelectedBlockId]);
 
   const handleSaveDraft = useCallback(() => {
     if (!doc) return;
@@ -443,6 +452,56 @@ function StoryCreatorClientInner({
     void flushSave(cur).catch(() => {});
   }, [flushSave]);
 
+  // ── Auto-save ─────────────────────────────────────────────────────────────
+
+  const dirtyRef = useRef(false);
+  dirtyRef.current = storyEditorDirty;
+
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Debounced auto-save: commit unsaved changes 3 s after the last edit.
+  useEffect(() => {
+    if (!storyEditorDirty || !doc) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      const cur = docRef.current;
+      if (cur && dirtyRef.current) void flushSave(cur).catch(() => {});
+    }, 3000);
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [doc, storyEditorDirty, flushSave]);
+
+  // Save immediately when the tab/page is hidden (tab switch or browser close).
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "hidden" || !dirtyRef.current) return;
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+      const cur = docRef.current;
+      if (cur) void flushSave(cur).catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [flushSave]);
+
+  // Show the browser's native "leave page?" prompt if there are unsaved changes.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
   // ── Responsive side effects ───────────────────────────────────────────────
 
   useEffect(() => {
@@ -457,25 +516,6 @@ function StoryCreatorClientInner({
     if (!isLg && mobileShellTab !== "add-block") setBlockSettingsSheetOpen(false);
   }, [isLg, mobileShellTab, setBlockSettingsSheetOpen]);
 
-  useEffect(() => {
-    if (!isLg && isFullscreen) setIsFullscreen(false);
-  }, [isLg, isFullscreen]);
-
-  useEffect(() => { setIsFullscreen(false); }, [storyId]);
-
-  useEffect(() => {
-    if (!isFullscreen) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
-  }, [isFullscreen]);
-
-  useEffect(() => {
-    if (!isFullscreen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setIsFullscreen(false); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isFullscreen]);
 
   // ── Panel width persistence ───────────────────────────────────────────────
 
@@ -587,7 +627,7 @@ function StoryCreatorClientInner({
   );
 
   const insertBlockFromDockPicker = useCallback(
-    (presetId: import("../utils/story-block-presets").StoryAddBlockPresetId, opts?: { fromFullscreenAddModal?: boolean; appendToEnd?: boolean }) => {
+    (presetId: import("../utils/story-block-presets").StoryAddBlockPresetId, opts?: { appendToEnd?: boolean }) => {
       if (!activePair) {
         toast.error("Pick a section in the outline first.");
         return;
@@ -595,10 +635,8 @@ function StoryCreatorClientInner({
       const blocks = activePair.section.blocks;
       const idx = !opts?.appendToEnd && selectedBlockId ? blocks.findIndex((b) => b.id === selectedBlockId) : -1;
       const insertIndex = idx >= 0 ? idx + 1 : blocks.length;
-      const headingLocked = Boolean(opts?.fromFullscreenAddModal && presetId === "text_heading");
-      insertBlockWithPreset(activePair.section.id, insertIndex, presetId, { headingPresetLocked: headingLocked });
+      insertBlockWithPreset(activePair.section.id, insertIndex, presetId, {});
       setAddBlockSheetOpen(false);
-      setFullscreenAddBlockOpen(false);
     },
     [activePair, selectedBlockId, insertBlockWithPreset],
   );
@@ -616,21 +654,6 @@ function StoryCreatorClientInner({
       }
     },
     [isLg, setLeftPanelOpen, setInspectorOpen, setInspectorTab, setBlockSettingsSheetOpen],
-  );
-
-  // ── Fullscreen stats ──────────────────────────────────────────────────────
-
-  const fullscreenStoryStats = useMemo(() => {
-    if (!doc) return { wordCount: 0, sectionCount: 0 };
-    const flatSections = flattenSectionsDepthFirst(doc.sections ?? []);
-    let wordCount = 0;
-    for (const sec of flatSections) wordCount += wordsInStorySection(sec.blocks ?? []);
-    return { wordCount, sectionCount: flatSections.length };
-  }, [doc]);
-
-  const fullscreenAddBlockPresetGroups = useMemo(
-    () => STORY_ADD_BLOCK_PRESET_GROUPS.map((g) => ({ ...g, items: [...g.items] })).filter((g) => g.items.length > 0),
-    [],
   );
 
   // ── Add-section wrappers that also trigger outline rename ─────────────────
@@ -693,11 +716,15 @@ function StoryCreatorClientInner({
   const publishSplitControl = (opts?: { tall?: boolean }) => {
     const h = opts?.tall ? "h-11 min-h-[44px]" : "h-9";
     return (
-      <div className={cn("flex items-stretch", opts?.tall && "shadow-sm")}>
+      <div
+        role="group"
+        aria-label="Publish"
+        className={cn("join", opts?.tall && "shadow-sm")}
+      >
         <Button
           type="button"
           size="sm"
-          className={cn(h, "shrink-0 gap-1.5 rounded-l-lg rounded-r-none px-3.5 font-semibold sm:px-4")}
+          className={cn(h, "join-item shrink-0 gap-1.5 border-0 px-3.5 font-semibold sm:px-4")}
           onClick={handlePublish}
         >
           Publish
@@ -706,9 +733,9 @@ function StoryCreatorClientInner({
           <DropdownMenuTrigger
             type="button"
             className={cn(
-              buttonVariants({ size: "sm" }),
+              buttonVariants({ variant: "default", size: "sm" }),
               h,
-              "inline-flex shrink-0 items-center justify-center rounded-l-none rounded-r-lg border-l border-black/10 px-2.5 font-semibold",
+              "join-item inline-flex shrink-0 items-center justify-center border-0 border-l border-primary-content/15 px-2.5",
               opts?.tall && "min-w-[44px]",
             )}
             aria-label="More publish options"
@@ -789,7 +816,7 @@ function StoryCreatorClientInner({
         mobileOverlay={mobileOverlay}
         onCloseMobileOverlay={mobileOverlay ? () => setMobileShellTab("add-block") : undefined}
         showCollapsedRail={Boolean(mobileOverlay)}
-        outlineSectionNavDeferMs={mobileOverlay || !isFullscreen ? 300 : undefined}
+        outlineSectionNavDeferMs={mobileOverlay ? 300 : undefined}
       />
     ) : null;
 
@@ -802,7 +829,7 @@ function StoryCreatorClientInner({
       <div className="flex flex-1 flex-col items-center justify-center gap-4 p-12 text-center">
         <p className="text-sm text-destructive">{loadError}</p>
         {onBack ? (
-          <button type="button" className={cn(buttonVariants({ variant: "outline", size: "sm" }), "font-medium")} onClick={onBack}>
+          <button type="button" className={cn(buttonVariants({ variant: "outline", size: "sm" }), "font-medium")} onClick={() => onBack({ selectedBlockId: null, mode: "edit" })}>
             Go back
           </button>
         ) : null}
@@ -822,129 +849,14 @@ function StoryCreatorClientInner({
 
   const editorPanel =
     doc && activePair ? (
-      <div
-        className={cn(
-          "flex min-h-0 flex-1 flex-col overflow-hidden",
-          isFullscreen ? "bg-base-300" : "bg-base-300/35",
-        )}
-      >
-        {isFullscreen ? (
-          <div className="sticky top-0 z-20 shrink-0 border-b border-base-content/10 bg-base-300/95 px-3 py-2.5 shadow-sm backdrop-blur-md lg:px-4">
-            <div className="flex flex-wrap items-center gap-2 gap-y-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-10 w-10 shrink-0 rounded-xl border-base-content/15 p-0 font-medium sm:h-9 sm:w-9 sm:rounded-lg"
-                title="Exit fullscreen (Esc)"
-                aria-label="Exit fullscreen writing mode"
-                onClick={() => setIsFullscreen(false)}
-              >
-                <Minimize2 className="size-4 shrink-0 opacity-90" aria-hidden />
-              </Button>
-              <StoryCreatorBrandMark />
-              {!isLg && isFullscreen ? <StoryEditPreviewModeToggle mode={mode} onMode={setMode} layout="dense" /> : null}
-              {!isLg && mode === "edit" ? (
-                <>
-                  <Button
-                    type="button" size="sm" variant="outline"
-                    className="h-10 shrink-0 gap-1.5 rounded-xl border-base-content/15 px-3 font-medium sm:h-9 sm:rounded-lg"
-                    onClick={() => setAddBlockSheetOpen(true)}
-                  >
-                    <Plus className="size-4 shrink-0 opacity-90" aria-hidden />
-                    Add
-                  </Button>
-                  <Button
-                    type="button" size="sm" variant="outline"
-                    className="h-10 shrink-0 gap-1.5 rounded-xl border-base-content/15 px-3 font-medium sm:h-9 sm:rounded-lg"
-                    onClick={() => { setInspectorTab("block"); setBlockSettingsSheetOpen(true); }}
-                  >
-                    <PanelRight className="size-4 shrink-0 opacity-90" aria-hidden />
-                    Inspect
-                  </Button>
-                </>
-              ) : null}
-              <div className="flex min-w-0 flex-1 basis-full flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:basis-[min(100%,14rem)] sm:flex-1">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[11px] font-semibold uppercase tracking-wide text-base-content/45">{doc.title}</p>
-                  {activePair.breadcrumb.length > 0 ? (
-                    <p className="truncate text-xs text-base-content/50">{activePair.breadcrumb.map((b) => b.title).join(" · ")}</p>
-                  ) : null}
-                  <p className="truncate font-heading text-base font-semibold leading-snug text-base-content lg:text-lg">{activePair.section.title}</p>
-                </div>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  <span className="rounded-full border border-primary/35 bg-primary/10 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-primary" title="Article type">
-                    {storyKindPillText(doc.kind)}
-                  </span>
-                  {headerPublishState != null ? (
-                    <span
-                      className={cn(
-                        "rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tracking-wide",
-                        headerPublishState === "published" && "border-success/40 bg-success/15 text-success",
-                        headerPublishState === "saved" && "border-base-content/20 bg-base-content/[0.08] text-base-content/80",
-                        headerPublishState === "draft" && "border-warning/40 bg-warning/12 text-warning",
-                      )}
-                    >
-                      {headerPublishState}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-              {isLg ? (
-                <>
-                  <StoryEditPreviewModeToggle mode={mode} onMode={setMode} layout="compact" />
-                  {mode === "edit" ? (
-                    <>
-                      <Button
-                        type="button" size="sm" variant="outline"
-                        className={cn("h-9 w-9 shrink-0 rounded-lg border-base-content/12 p-0 font-medium", isLeftPanelOpen && "border-primary/40 bg-primary/12 text-primary ring-1 ring-primary/20")}
-                        title={isLeftPanelOpen ? "Hide structure" : "Show structure"}
-                        onClick={() => setLeftPanelOpen((o) => !o)}
-                      >
-                        <FolderTree className="size-4 opacity-90" aria-hidden />
-                      </Button>
-                      <Button
-                        type="button" size="sm" variant="outline"
-                        className={cn("h-9 w-9 shrink-0 rounded-lg border-base-content/12 p-0 font-medium", inspectorOpen && "border-primary/40 bg-primary/12 text-primary ring-1 ring-primary/20")}
-                        title={inspectorOpen ? "Hide inspector" : "Show inspector"}
-                        onClick={() => setInspectorOpen((o) => !o)}
-                      >
-                        {inspectorOpen ? <PanelRightClose className="size-4 opacity-90" aria-hidden /> : <SlidersHorizontal className="size-4 opacity-90" aria-hidden />}
-                      </Button>
-                    </>
-                  ) : null}
-                  {publishSplitControl()}
-                  {mode === "edit" ? (
-                    <Button
-                      type="button" size="sm" variant="outline"
-                      className="h-9 w-9 shrink-0 rounded-lg border-base-content/12 p-0 font-medium"
-                      title="Add block"
-                      onClick={() => setFullscreenAddBlockOpen(true)}
-                    >
-                      <Plus className="size-4 opacity-90" aria-hidden />
-                    </Button>
-                  ) : null}
-                </>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-        {isFullscreen && mode === "edit" ? (
-          <StoryGlobalTipTapToolbar
-            toolbarDensity={isLg ? "default" : "touch"}
-            className="px-2 pb-2 pt-1 lg:px-4"
-            frameClassName="rounded-lg border-base-content/10 bg-base-200/70"
-          />
-        ) : null}
-        <div className={cn("min-h-0 flex-1 overflow-y-auto bg-base-300/65 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]", isFullscreen && "bg-base-300/80")}>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-base-300/35">
+        <div className="min-h-0 flex-1 overflow-y-auto bg-base-300/65 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
           <div
             className={cn(
               "mx-auto w-full max-w-full min-w-0",
-              isFullscreen
-                ? "px-3 pb-8 pt-3 sm:px-5 sm:pb-10 sm:pt-4 lg:px-8 lg:pb-14 lg:pt-5"
-                : mode === "edit"
-                  ? "px-3 pb-24 pt-4 sm:px-5 sm:pt-5 lg:px-8 lg:pb-20 lg:pt-6"
-                  : "px-3 pb-8 pt-4 sm:px-5 lg:px-8 lg:pb-8",
+              mode === "edit"
+                ? "px-3 pb-24 pt-4 sm:px-5 sm:pt-5 lg:px-8 lg:pb-20 lg:pt-6"
+                : "px-3 pb-8 pt-4 sm:px-5 lg:px-8 lg:pb-8",
             )}
           >
             <StoryTipTapCanvasToneProvider tone="paper">
@@ -956,74 +868,65 @@ function StoryCreatorClientInner({
                   "ring-1 ring-black/[0.04]",
                 )}
               >
-                {isFullscreen && mode === "preview" ? (
-                  <div className="min-h-[min(32rem,70vh)] overflow-auto px-3 py-4 sm:px-5 sm:py-6">
-                    <StoryCreatorPreview doc={doc} activeSectionId={selectedSectionId} onPickSection={selectSection} />
-                  </div>
-                ) : null}
-                {!isFullscreen ? (
-                  <div className="border-b border-black/20 px-4 py-4 sm:px-5 lg:px-8">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Section</p>
-                    {outlineRename?.kind === "section" && outlineRename.id === activePair.section.id ? (
-                      <div className="mt-2 max-w-xl" onClick={(e) => e.stopPropagation()}>
-                        <OutlineRenameInput
-                          initial={activePair.section.title}
-                          onCommit={(v) => { renameSectionTitle(activePair.section.id, v); setOutlineRename(null); }}
-                          onCancel={() => setOutlineRename(null)}
-                        />
+                <div className="border-b border-black/20 px-4 py-4 sm:px-5 lg:px-8">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Section</p>
+                  {outlineRename?.kind === "section" && outlineRename.id === activePair.section.id ? (
+                    <div className="mt-2 max-w-xl" onClick={(e) => e.stopPropagation()}>
+                      <OutlineRenameInput
+                        initial={activePair.section.title}
+                        onCommit={(v) => { renameSectionTitle(activePair.section.id, v); setOutlineRename(null); }}
+                        onCancel={() => setOutlineRename(null)}
+                      />
+                    </div>
+                  ) : (
+                    <div className="mt-1 flex items-center gap-2">
+                      <div className="min-w-0 flex-1">
+                        {activePair.breadcrumb.length > 0 ? (
+                          <p className="truncate text-xs text-neutral-600">{activePair.breadcrumb.map((b) => b.title).join(" · ")}</p>
+                        ) : null}
+                        <p className="truncate font-heading text-lg font-semibold leading-snug tracking-tight text-neutral-900">{activePair.section.title}</p>
                       </div>
-                    ) : (
-                      <div className="mt-1 flex items-center gap-2">
-                        <div className="min-w-0 flex-1">
-                          {activePair.breadcrumb.length > 0 ? (
-                            <p className="truncate text-xs text-neutral-600">{activePair.breadcrumb.map((b) => b.title).join(" · ")}</p>
-                          ) : null}
-                          <p className="truncate font-heading text-lg font-semibold leading-snug tracking-tight text-neutral-900">{activePair.section.title}</p>
-                        </div>
-                        <button
-                          type="button"
-                          className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-10 w-10 shrink-0 rounded-lg p-0 text-neutral-600 hover:bg-neutral-100")}
-                          aria-label="Rename section"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => queueMicrotask(() => setOutlineRename({ kind: "section", id: activePair.section.id }))}
-                        >
-                          <Pencil className="size-4" />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ) : null}
-                {!(isFullscreen && mode === "preview") ? (
-                  <div className={cn("space-y-4 px-4 py-6 sm:px-6 lg:space-y-2 lg:px-8 lg:py-8", isFullscreen && "pb-2")}>
-                    {groupStoryBlocksForLayout(activePair.section.blocks).map((group) => {
-                      const sectionId = activePair.section.id;
-                      if (group.kind === "float-wrap") {
-                        return (
-                          <Fragment key={`${group.float.id}-${group.text.id}`}>
-                            <div className="flow-root min-w-0">
-                              <StoryBlockRowDesignWrap block={group.float} floated>
-                                <StoryEditorSectionBlockCardRow sectionId={sectionId} block={group.float} patchMediaBlock={patchMediaBlock} patchSplitContentBlock={patchSplitContentBlock} />
-                              </StoryBlockRowDesignWrap>
-                              <StoryBlockRowDesignWrap block={group.text} floated={false} wrapperClassName="min-w-0">
-                                <StoryEditorSectionBlockCardRow sectionId={sectionId} block={group.text} patchMediaBlock={patchMediaBlock} patchSplitContentBlock={patchSplitContentBlock} />
-                              </StoryBlockRowDesignWrap>
-                            </div>
-                          </Fragment>
-                        );
-                      }
-                      const block = group.block;
+                      <button
+                        type="button"
+                        className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-10 w-10 shrink-0 rounded-lg p-0 text-neutral-600 hover:bg-neutral-100")}
+                        aria-label="Rename section"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => queueMicrotask(() => setOutlineRename({ kind: "section", id: activePair.section.id }))}
+                      >
+                        <Pencil className="size-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-4 px-4 py-6 sm:px-6 lg:space-y-2 lg:px-8 lg:py-8">
+                  {groupStoryBlocksForLayout(activePair.section.blocks).map((group) => {
+                    const sectionId = activePair.section.id;
+                    if (group.kind === "float-wrap") {
                       return (
-                        <StoryEditorSectionBlockCardRow
-                          key={block.id}
-                          sectionId={sectionId}
-                          block={block}
-                          patchMediaBlock={patchMediaBlock}
-                          patchSplitContentBlock={patchSplitContentBlock}
-                        />
+                        <Fragment key={`${group.float.id}-${group.text.id}`}>
+                          <div className="flow-root min-w-0">
+                            <StoryBlockRowDesignWrap block={group.float} floated>
+                              <StoryEditorSectionBlockCardRow sectionId={sectionId} block={group.float} patchMediaBlock={patchMediaBlock} patchSplitContentBlock={patchSplitContentBlock} />
+                            </StoryBlockRowDesignWrap>
+                            <StoryBlockRowDesignWrap block={group.text} floated={false} wrapperClassName="min-w-0">
+                              <StoryEditorSectionBlockCardRow sectionId={sectionId} block={group.text} patchMediaBlock={patchMediaBlock} patchSplitContentBlock={patchSplitContentBlock} />
+                            </StoryBlockRowDesignWrap>
+                          </div>
+                        </Fragment>
                       );
-                    })}
-                  </div>
-                ) : null}
+                    }
+                    const block = group.block;
+                    return (
+                      <StoryEditorSectionBlockCardRow
+                        key={block.id}
+                        sectionId={sectionId}
+                        block={block}
+                        patchMediaBlock={patchMediaBlock}
+                        patchSplitContentBlock={patchSplitContentBlock}
+                      />
+                    );
+                  })}
+                </div>
               </div>
             </StoryTipTapCanvasToneProvider>
           </div>
@@ -1082,15 +985,19 @@ function StoryCreatorClientInner({
             className={cn(
               "flex min-h-0 flex-1 flex-col overflow-hidden",
               mode === "edit" && "bg-base-300",
-              mode === "preview" && !isFullscreen && "bg-base-100",
-              isFullscreen && "fixed inset-0 z-[100] h-[100dvh] max-h-[100dvh] w-screen max-w-[100vw] overflow-hidden bg-base-300",
+              mode === "preview" && "bg-base-100",
             )}
           >
-            {!isFullscreen ? (
-              <header className="flex shrink-0 flex-col gap-2.5 border-b border-base-content/10 bg-base-300/95 px-3 py-3 backdrop-blur-md sm:gap-2 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-x-4 lg:gap-y-2 lg:px-5 lg:py-3">
+            <div className="sticky top-0 z-20 shrink-0">
+            <header className="flex flex-col gap-2.5 border-b border-base-content/10 bg-base-300/95 px-3 py-3 backdrop-blur-md sm:gap-2 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between lg:gap-x-4 lg:gap-y-2 lg:px-5 lg:py-3">
                 {!isLg ? (
                   <>
                     <div className="flex flex-wrap items-center gap-2">
+                      {onBack ? (
+                        <Button type="button" variant="ghost" size="sm" className="h-11 min-h-[44px] w-11 shrink-0 rounded-xl p-0" aria-label="Go back" onClick={() => onBack({ selectedBlockId, mode })}>
+                          <ChevronLeft className="size-5" aria-hidden />
+                        </Button>
+                      ) : null}
                       <StoryCreatorBrandMark />
                       {publishSplitControl({ tall: true })}
                     </div>
@@ -1117,7 +1024,7 @@ function StoryCreatorClientInner({
                             <Button
                               type="button" variant="outline" size="sm"
                               className={cn("h-11 min-h-[44px] w-11 shrink-0 rounded-xl border-base-content/12 p-0", blockSettingsSheetOpen && "border-primary/40 bg-primary/12 text-primary ring-1 ring-primary/20")}
-                              onClick={() => { setInspectorTab("block"); setBlockSettingsSheetOpen((o) => !o); }}
+                              onClick={() => { setInspectorTab("block"); setBlockSettingsSheetOpen(!blockSettingsSheetOpen); }}
                             >
                               <SlidersHorizontal className="size-5 opacity-90" aria-hidden />
                             </Button>
@@ -1130,6 +1037,11 @@ function StoryCreatorClientInner({
                   <>
                     <div className="flex min-w-0 flex-1 flex-col gap-2.5 lg:flex-row lg:flex-wrap lg:items-center lg:gap-x-4">
                       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2">
+                        {onBack ? (
+                          <Button type="button" variant="ghost" size="sm" className="hidden h-9 w-9 shrink-0 rounded-lg p-0 lg:flex" aria-label="Go back" onClick={() => onBack({ selectedBlockId, mode })}>
+                            <ChevronLeft className="size-4" aria-hidden />
+                          </Button>
+                        ) : null}
                         <div className="hidden shrink-0 lg:flex">
                           <StoryCreatorBrandMark />
                         </div>
@@ -1163,18 +1075,18 @@ function StoryCreatorClientInner({
                     </div>
                     <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                       <StoryEditPreviewModeToggle mode={mode} onMode={setMode} layout="default" />
-                      {mode === "edit" && isLg ? (
-                        <Button
-                          type="button" size="sm" variant="outline"
-                          className="h-9 w-9 shrink-0 rounded-lg border-base-content/12 p-0"
-                          title="Fullscreen writing (Esc to exit)"
-                          onClick={() => { setMobileShellTab("add-block"); setIsFullscreen(true); }}
-                        >
-                          <Expand className="size-4 opacity-90" aria-hidden />
-                        </Button>
-                      ) : null}
                       {mode === "edit" ? (
                         <>
+                          {onEnterFullscreen ? (
+                            <Button
+                              type="button" size="sm" variant="outline"
+                              className="h-9 w-9 shrink-0 rounded-lg border-base-content/12 p-0"
+                              title="Fullscreen writing"
+                              onClick={() => { setMobileShellTab("add-block"); onEnterFullscreen({ selectedBlockId, mode }); }}
+                            >
+                              <Expand className="size-4 opacity-90" aria-hidden />
+                            </Button>
+                          ) : null}
                           <Button
                             type="button" size="sm" variant="outline"
                             className={cn("h-9 w-9 shrink-0 rounded-lg border-base-content/12 p-0", isLeftPanelOpen && "border-primary/40 bg-primary/12 text-primary ring-1 ring-primary/20")}
@@ -1197,28 +1109,25 @@ function StoryCreatorClientInner({
                     </div>
                   </>
                 )}
-              </header>
-            ) : null}
+            </header>
 
-            {!isFullscreen && mode === "edit" ? (
+            {mode === "edit" ? (
               <StoryGlobalTipTapToolbar
                 toolbarDensity={isLg ? "default" : "touch"}
-                className="shrink-0 border-b border-base-content/10 bg-base-300/90 px-2 py-1.5 lg:px-4"
+                className="border-b border-base-content/10 bg-base-300/90 px-2 py-1.5 lg:px-4"
                 frameClassName="rounded-lg border-base-content/10 bg-base-200/75 shadow-sm"
               />
             ) : null}
+            </div>
 
             {isLg ? (
-              mode === "preview" && !isFullscreen ? (
+              mode === "preview" ? (
                 <StoryCreatorPreview doc={doc} activeSectionId={selectedSectionId} onPickSection={selectSection} />
-              ) : mode === "preview" && isFullscreen ? (
-                <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">{editorPanel}</div>
               ) : (
                 <div
                   className={cn(
                     "relative flex min-h-0 flex-1",
-                    !isFullscreen && "pb-16",
-                    isFullscreen && "min-h-0 flex-1 overflow-hidden pb-0",
+                    mode === "edit" && !dockCollapsed && "pb-16",
                     (isResizingLeftPanel || isResizingRightPanel) && "select-none",
                   )}
                 >
@@ -1263,7 +1172,7 @@ function StoryCreatorClientInner({
                     </button>
                   ) : null}
                   {/* Editor */}
-                  <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden", !isFullscreen && "bg-base-300/25", isFullscreen && "min-h-0 min-w-0 flex-1 bg-base-300/20")}>
+                  <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-base-300/25">
                     {editorPanel}
                   </div>
                   {/* Right panel */}
@@ -1291,7 +1200,7 @@ function StoryCreatorClientInner({
                           <GripVertical className="pointer-events-none size-3 text-primary/50" aria-hidden />
                         </div>
                       ) : null}
-                      <div className="h-full min-h-0 flex-1 overflow-hidden" style={{ width: rightPanelWidthPx, minWidth: rightPanelWidthPx }}>
+                      <div className="flex flex-col h-full min-h-0 flex-1 overflow-hidden" style={{ width: rightPanelWidthPx, minWidth: rightPanelWidthPx }}>
                         {inspectorEl}
                       </div>
                     </div>
@@ -1311,7 +1220,7 @@ function StoryCreatorClientInner({
             ) : (
               <>
                 {mode === "preview" ? (
-                  isFullscreen ? editorPanel : <StoryCreatorPreview doc={doc} activeSectionId={selectedSectionId} onPickSection={selectSection} />
+                  <StoryCreatorPreview doc={doc} activeSectionId={selectedSectionId} onPickSection={selectSection} />
                 ) : (
                   <>
                     <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -1319,14 +1228,14 @@ function StoryCreatorClientInner({
                     </div>
                     <StoryMobileFullScreenPanel
                       open={mobileShellTab === "structure"}
-                      onOpenChange={(open) => { if (!open) setMobileShellTab("add-block"); }}
+                      onOpenChange={(open: boolean) => { if (!open) setMobileShellTab("add-block"); }}
                       title="Story structure"
                     >
                       {renderStructureSidebar(true)}
                     </StoryMobileFullScreenPanel>
                     <StoryMobileFullScreenPanel
                       open={mobileShellTab === "settings"}
-                      onOpenChange={(open) => { if (!open) setMobileShellTab("add-block"); }}
+                      onOpenChange={(open: boolean) => { if (!open) setMobileShellTab("add-block"); }}
                       title="Story settings"
                     >
                       <StoryCreatorInspector
@@ -1387,7 +1296,7 @@ function StoryCreatorClientInner({
               </StoryAddBlockBottomSheet>
             ) : null}
 
-            {mode === "edit" && !isFullscreen ? (
+            {mode === "edit" ? (
               dockCollapsed ? (
                 <StoryEditorDockPullTab onOpen={() => setDockCollapsed(false)} />
               ) : (
@@ -1400,21 +1309,9 @@ function StoryCreatorClientInner({
               )
             ) : null}
 
-            {isFullscreen && mode === "edit" ? (
-              <footer className="relative z-20 flex h-9 shrink-0 items-center justify-between border-t border-base-content/15 bg-base-200/92 px-3 text-[11px] font-medium tracking-wide text-base-content/70 backdrop-blur-sm sm:px-4">
-                <div className="flex items-center gap-3">
-                  <span className="uppercase text-base-content/55">Status</span>
-                  <span>{fullscreenStoryStats.wordCount.toLocaleString()} words</span>
-                  <span className="text-base-content/35">|</span>
-                  <span>{fullscreenStoryStats.sectionCount.toLocaleString()} sections</span>
-                </div>
-                <span className="hidden uppercase text-base-content/45 sm:inline">Fullscreen writing</span>
-              </footer>
-            ) : null}
-
             <StoryBlockPlacementDialog
               open={blockPlacementModal !== null}
-              onOpenChange={(open) => { if (!open) handlePlacementModalClose(); }}
+              onOpenChange={(open: boolean) => { if (!open) handlePlacementModalClose(); }}
               flow={blockPlacementModal?.flow ?? null}
               variant={blockPlacementModal?.variant ?? "section"}
               allowNestedColumns={blockPlacementModal?.allowNestedColumns ?? true}
@@ -1424,35 +1321,6 @@ function StoryCreatorClientInner({
               onDuplicateComplete={applyPlacementDuplicate}
             />
 
-            <Dialog open={fullscreenAddBlockOpen} onOpenChange={setFullscreenAddBlockOpen}>
-              <DialogPortal>
-                <DialogBackdrop className="z-[200]" />
-                <DialogViewport className="fixed inset-0 z-[200] flex min-h-full w-full items-center justify-center p-4">
-                  <DialogPopup
-                    className={cn(
-                      "max-h-[min(90dvh,720px)] w-full max-w-2xl overflow-y-auto border-base-content/12 bg-base-100 p-5 shadow-xl ring-1 ring-base-content/[0.06]",
-                      "data-[open]:animate-in data-[open]:fade-in-0 data-[open]:zoom-in-95",
-                    )}
-                  >
-                    <DialogTitle className="font-heading text-lg text-base-content">Add block</DialogTitle>
-                    <DialogDescription className="text-sm text-base-content/65">
-                      New blocks are inserted after the selected block when possible, otherwise at the end of this section.
-                    </DialogDescription>
-                    <div className="mt-4 max-h-[min(52dvh,480px)] overflow-y-auto pr-1">
-                      <StoryAddBlockPresetTypeGrid
-                        groups={fullscreenAddBlockPresetGroups}
-                        onPick={(id) => insertBlockFromDockPicker(id, { fromFullscreenAddModal: true })}
-                      />
-                    </div>
-                    <div className="mt-5 flex justify-end border-t border-base-content/10 pt-4">
-                      <Button type="button" variant="ghost" size="sm" className="rounded-lg" onClick={() => setFullscreenAddBlockOpen(false)}>
-                        Cancel
-                      </Button>
-                    </div>
-                  </DialogPopup>
-                </DialogViewport>
-              </DialogPortal>
-            </Dialog>
           </div>
         </StoryTiptapActiveEditorProvider>
       </StoryTipTapStoryDocProvider>

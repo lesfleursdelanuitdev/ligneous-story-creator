@@ -2,18 +2,31 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
+  CalendarDays,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   FilePenLine,
   GripVertical,
+  MapPin,
   MoreHorizontal,
   Pencil,
   Plus,
   Trash2,
+  User,
+  Users,
   X,
 } from "lucide-react";
 import { Button, buttonVariants } from "./ui/button";
+import {
+  Dialog,
+  DialogBackdrop,
+  DialogDescription,
+  DialogPortal,
+  DialogPopup,
+  DialogTitle,
+  DialogViewport,
+} from "./ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,8 +36,18 @@ import {
 } from "./ui/dropdown-menu";
 import { cn } from "../cn";
 import { flattenSectionBlocksForOutline } from "../utils/story-structure-outline-blocks";
-import type { StoryDocument, StorySection } from "../types";
+import type { StoryDocument, StorySection, StorySectionEntityLink } from "../types";
+import { newStoryId } from "../types";
 import { findSectionById, findSectionPath, sectionIsAncestorOf } from "../utils/story-section-tree";
+import {
+  useStoryEditorPickers,
+  storyPickerIndividualDisplayName,
+  storyPickerIndividualMetaLine,
+  type StoryPickerIndividualItem,
+  type StoryPickerFamilyItem,
+  type StoryPickerEventItem,
+  type StoryPickerPlaceRow,
+} from "./pickers-context";
 
 export type OutlineRenameTarget = { kind: "section"; id: string };
 
@@ -107,6 +130,228 @@ export function OutlineRenameInput({
     />
   );
 }
+
+// ── Section entity links ──────────────────────────────────────────────────────
+
+type SectionEntityLinkType = "person" | "family" | "event" | "place";
+
+const SECTION_ENTITY_TYPES: { type: SectionEntityLinkType; label: string; Icon: React.ElementType }[] = [
+  { type: "person", label: "Individual", Icon: User },
+  { type: "family", label: "Family", Icon: Users },
+  { type: "event", label: "Event", Icon: CalendarDays },
+  { type: "place", label: "Place", Icon: MapPin },
+];
+
+function entityHref(entityType: SectionEntityLinkType, entityId: string): string {
+  switch (entityType) {
+    case "person": return `/individuals/${encodeURIComponent(entityId)}`;
+    case "family": return `/families/${encodeURIComponent(entityId)}`;
+    case "event": return `/tree/events/${encodeURIComponent(entityId)}`;
+    case "place": return `/tree/places/${encodeURIComponent(entityId)}`;
+  }
+}
+
+function entityTypeIcon(type: SectionEntityLinkType) {
+  const meta = SECTION_ENTITY_TYPES.find((t) => t.type === type);
+  const Icon = meta?.Icon ?? User;
+  return <Icon className="size-3 shrink-0" />;
+}
+
+function SectionEntityLinkPicker({
+  onPick,
+  onClose,
+}: {
+  onPick: (link: StorySectionEntityLink) => void;
+  onClose: () => void;
+}) {
+  const pickers = useStoryEditorPickers();
+  const [entityType, setEntityType] = useState<SectionEntityLinkType>("person");
+  const [eventPickerOpen, setEventPickerOpen] = useState(false);
+
+  const typeChip = (active: boolean) =>
+    cn(
+      "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-semibold transition-colors",
+      active
+        ? "border-primary/40 bg-primary/10 text-primary"
+        : "border-base-content/10 bg-base-100/60 text-base-content/55 hover:border-base-content/20 hover:text-base-content",
+    );
+
+  const pick = (entityType: SectionEntityLinkType, entityId: string, entityXref: string | null | undefined, label: string) => {
+    onPick({ id: newStoryId(), entityType, entityId, entityXref: entityXref ?? undefined, label });
+    onClose();
+  };
+
+  const pickIndividual = (ind: StoryPickerIndividualItem) => {
+    pick("person", ind.id, ind.xref, storyPickerIndividualDisplayName(ind));
+  };
+
+  const pickFamily = (fam: StoryPickerFamilyItem) => {
+    const label = fam.primaryLine ? `Family of ${fam.primaryLine}` : (fam.xref ?? fam.id);
+    pick("family", fam.id, fam.xref, label);
+  };
+
+  const pickEvent = (ev: StoryPickerEventItem) => {
+    pick("event", ev.id, undefined, ev.label || ev.id);
+    setEventPickerOpen(false);
+  };
+
+  const pickPlace = (place: StoryPickerPlaceRow) => {
+    pick("place", place.id, undefined, place.label || place.name || place.original || place.id);
+  };
+
+  return (
+    <Dialog open onOpenChange={(open: boolean) => !open && onClose()}>
+      <DialogPortal>
+        <DialogBackdrop />
+        <DialogViewport data-story-entity-link-dialog>
+          <DialogPopup className="max-w-2xl overflow-hidden border-base-content/10 bg-base-100 p-0 text-base-content shadow-2xl">
+            <div className="border-b border-base-content/10 bg-base-200/35 px-5 py-4">
+              <DialogTitle className="text-base font-semibold">Add entity to section</DialogTitle>
+              <DialogDescription className="mt-0.5 text-sm text-base-content/55">
+                Link this section to a person, family, event, or place it discusses.
+              </DialogDescription>
+            </div>
+
+            <div className="border-b border-base-content/8 px-5 py-3">
+              <div className="flex flex-wrap gap-2">
+                {SECTION_ENTITY_TYPES.map(({ type, label, Icon }) => (
+                  <button key={type} type="button" onClick={() => setEntityType(type)} className={typeChip(entityType === type)}>
+                    <Icon className="size-3.5 shrink-0" />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="px-5 py-5">
+              {entityType === "person" && pickers.IndividualSearchPicker ? (
+                <pickers.IndividualSearchPicker
+                  idPrefix="section-entity-ind"
+                  label="Find person"
+                  description="Search by given name and/or surname."
+                  allowEmptySearch={false}
+                  limit={12}
+                  onPick={pickIndividual}
+                />
+              ) : entityType === "person" ? (
+                <p className="text-sm text-base-content/50">Individual search not available.</p>
+              ) : null}
+
+              {entityType === "family" && pickers.FamilySearchPicker ? (
+                <pickers.FamilySearchPicker idPrefix="section-entity-fam" onPick={pickFamily} />
+              ) : entityType === "family" && !pickers.FamilySearchPicker ? (
+                <p className="text-sm text-base-content/50">Family search not available.</p>
+              ) : null}
+
+              {entityType === "event" ? (
+                <div className="space-y-3">
+                  <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={() => setEventPickerOpen(true)}>
+                    Browse events…
+                  </Button>
+                  {pickers.EventPickerModal ? (
+                    <pickers.EventPickerModal
+                      open={eventPickerOpen}
+                      onOpenChange={setEventPickerOpen}
+                      onPick={pickEvent}
+                    />
+                  ) : null}
+                </div>
+              ) : null}
+
+              {entityType === "place" && pickers.PlaceSearchPicker ? (
+                <pickers.PlaceSearchPicker idPrefix="section-entity-place" onPick={pickPlace} />
+              ) : entityType === "place" && !pickers.PlaceSearchPicker ? (
+                <p className="text-sm text-base-content/50">Place search not available.</p>
+              ) : null}
+            </div>
+
+            <div className="flex justify-end border-t border-base-content/10 px-5 py-4">
+              <Button type="button" variant="outline" className="rounded-lg" onClick={onClose}>
+                Cancel
+              </Button>
+            </div>
+          </DialogPopup>
+        </DialogViewport>
+      </DialogPortal>
+    </Dialog>
+  );
+}
+
+function SectionEntityLinksPanel({
+  section,
+  onPatch,
+}: {
+  section: StorySection;
+  onPatch: (patch: Partial<StorySection>) => void;
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const links = section.entityLinks ?? [];
+
+  const removeLink = (id: string) => {
+    onPatch({ entityLinks: links.filter((l) => l.id !== id) });
+  };
+
+  const addLink = (link: StorySectionEntityLink) => {
+    onPatch({ entityLinks: [...links, link] });
+  };
+
+  return (
+    <div className="space-y-2.5 rounded-lg border border-base-content/10 bg-base-100/50 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold text-base-content/70">Linked entities</p>
+        <button
+          type="button"
+          onClick={() => setPickerOpen(true)}
+          className="flex items-center gap-1 rounded-md border border-base-content/12 bg-base-100 px-2 py-0.5 text-[11px] font-semibold text-base-content/60 hover:text-base-content transition-colors"
+        >
+          <Plus className="size-3" />
+          Add
+        </button>
+      </div>
+
+      {links.length === 0 ? (
+        <p className="text-xs text-base-content/45 leading-relaxed">
+          No entities linked. Add people, families, events, or places this section discusses.
+        </p>
+      ) : (
+        <ul className="space-y-1.5">
+          {links.map((link) => (
+            <li key={link.id} className="flex items-center gap-2 rounded-md border border-base-content/10 bg-base-100 px-2.5 py-1.5">
+              {entityTypeIcon(link.entityType)}
+              <span className="min-w-0 flex-1 truncate text-xs font-medium text-base-content/80">{link.label}</span>
+              <a
+                href={entityHref(link.entityType, link.entityId)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] text-base-content/35 hover:text-primary transition-colors shrink-0"
+                title="Open entity page"
+              >
+                ↗
+              </a>
+              <button
+                type="button"
+                onClick={() => removeLink(link.id)}
+                className="ml-0.5 shrink-0 text-base-content/35 hover:text-error transition-colors"
+                aria-label={`Remove ${link.label}`}
+              >
+                <X className="size-3" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {pickerOpen ? (
+        <SectionEntityLinkPicker
+          onPick={addLink}
+          onClose={() => setPickerOpen(false)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// ── Section outline edit form ─────────────────────────────────────────────────
 
 function SectionOutlineEditForm({
   doc,
@@ -230,6 +475,10 @@ function SectionOutlineEditForm({
           Move this section to the root of the outline to set them.
         </p>
       )}
+      <SectionEntityLinksPanel
+        section={section}
+        onPatch={(patch) => onPatch(sectionId, patch)}
+      />
     </div>
   );
 }

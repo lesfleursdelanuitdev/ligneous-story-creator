@@ -10,7 +10,7 @@
 // ── Main editor shell ─────────────────────────────────────────────────────────
 
 export { StoryCreatorClient } from "./StoryCreatorClient";
-export type { StoryCreatorClientProps, StorySaveStatus } from "./StoryCreatorClient";
+export type { StoryCreatorClientProps, StorySaveStatus, StoryCreatorFullscreenState } from "./StoryCreatorClient";
 
 // ── Injection contexts ────────────────────────────────────────────────────────
 // Consuming apps must wrap <StoryCreatorClient> in these providers (or provide
