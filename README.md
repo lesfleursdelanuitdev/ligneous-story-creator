@@ -2,7 +2,25 @@
 
 A React block editor for writing family history stories that link to the people, families, events and places in a genealogy tree.
 
+**Architecture:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
 Authors build a story from sections and blocks: rich text, photos, tables, columns, and live embeds such as a timeline of a person's life. Text can link straight to a person's profile. The editor saves a versioned JSON document, and the package includes helpers to map that document to and from Postgres rows.
+
+## Screenshots
+
+These come from the Gonsalves family site and its admin app running on a demo database, loaded with the public US-presidents sample tree (`pres2020.ged`) through the real import pipeline. No family data is shown.
+
+<img src="docs/screenshots/admin-story-editor.png" alt="The editor: section outline, rich text with links to people in the tree, a pull quote, and the inspector">
+
+*The editor: section outline, rich text with links to people in the tree, a pull quote, and the inspector.*
+
+<img src="docs/screenshots/pub-story.png" alt="The published story on the public site">
+
+*The published story on the public site.*
+
+<img src="docs/screenshots/pub-story-phone.png" alt="The story on a phone" width="270">
+
+*The story on a phone.*
 
 ## What it does
 
